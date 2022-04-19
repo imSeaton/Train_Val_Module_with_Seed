@@ -1,14 +1,27 @@
 import math, random, argparse, time, uuid
 import os, os.path as osp
-from helper import makeDirectory, set_gpu
+# from helper import makeDirectory, set_gpu
 
 import numpy as np
 import torch
 from torch.nn import functional as F
 from sklearn.model_selection import KFold
-from torch_geometric.data import DataLoader, DenseDataLoader as DenseLoader
+from torch_geometric.loader import DataLoader, DenseDataLoader as DenseLoader
 from torch_geometric.datasets import TUDataset
 from MyModel import MyModel
+
+
+def makeDirectory(dirpath):
+    if not os.path.exists(dirpath):
+        os.makedirs(dirpath)
+
+
+def set_gpu(gpus):
+    if torch.cuda.is_available():
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        # os.environ["CUDA_VISIBLE_DEVICES"] = gpus
+        torch.cuda.set_device(1)
+
 
 # 禁止网络加速
 torch.backends.cudnn.benchmark = False
@@ -29,11 +42,12 @@ class Trainer(object):
 
         # build the data
         self.p.use_node_attr = (self.p.dataset == 'FRANKENSTEIN')
-        self.loadData()
+        self.dataset = self.loadData()
 
         # build the model
         self.model = None
         self.optimizer = None
+
 
     # load data
     def loadData(self):
@@ -41,7 +55,8 @@ class Trainer(object):
         path = "../data/" + self.p.dataset
         dataset = TUDataset(path, self.p.dataset, use_node_attr=self.p.use_node_attr)
         dataset.data.edge_attr = None
-        self.data = dataset
+        # self.data = dataset
+        return dataset
 
     # load model
     def addModel(self):
@@ -53,8 +68,8 @@ class Trainer(object):
         #         ratio=self.p.ratio,
         #         dropout_att=self.p.dropout_att,
         #     )
-        if self.p.model == 'MyModel':
-            model = MyModel()
+        if self.p.model == 'GCN':
+            model = GCN(dataset=self.dataset, hidden=32,  dropout_att=0.5)
         else:
             raise NotImplementedError
         model.to(self.device).reset_parameters()
@@ -90,7 +105,7 @@ class Trainer(object):
         return correct/len(loader.dataset), total_loss / len(loader.dataset)
 
     # validate or test model
-    def predict(self, seed, fold, loader):
+    def predict(self, loader):
         self.model.eval()
 
         correct = 0
@@ -125,18 +140,18 @@ class Trainer(object):
         kf = KFold(self.p.folds, shuffle=True, random_state=self.p.seed)
 
         test_indices, train_indices = [], []
-        for _, idx in kf.split(torch.zeros(len(self.data)), self.data.data.y):
+        for _, idx in kf.split(torch.zeros(len(self.dataset)), self.dataset.data.y):
             # 添加每一折的测试集
-            test_indices.append(torch.from_numpy(idx))
+            test_indices.append(torch.from_numpy(idx).long())
 
         # 循环交错取出test_indices中的items 作为验证集
         val_indices = [test_indices[i - 1] for i in range(self.p.folds)]
 
         for i in range(self.p.folds):
-            train_mask = torch.ones(len(self.data), dtype=torch.uint8)
+            train_mask = torch.ones(len(self.dataset), dtype=torch.long)
             train_mask[test_indices[i].long()] = 0
             train_mask[val_indices[i].long()] = 0
-            train_indices.append(train_mask.nonzero(as_tuple=False).view(-1))
+            train_indices.append(train_mask.nonzero().view(-1))
         return train_indices, test_indices, val_indices
 
     def num_graphs(self, data):
@@ -150,6 +165,7 @@ class Trainer(object):
         val_accs, test_accs = [], []
 
         makeDirectory('torch_saved/')
+        self.p.name = self.p.name.replace(":", "_")
         save_path = 'torch_saved/{}'.format(self.p.name)
         # 如果在命令行中运行，且有参数 restore, 则会直接加载模型
         if self.p.restore:
@@ -169,9 +185,11 @@ class Trainer(object):
             self.model = self.addModel()
             self.optimizer = self.addOptimizer()
 
-            train_dataset = self.data[train_idx]
-            test_dataset = self.data[test_idx]
-            val_dataset = self.data[val_idx]
+
+            train_dataset = self.dataset[train_idx]
+            # print(f"test_idx {test_idx}")
+            test_dataset = self.dataset[test_idx]
+            val_dataset = self.dataset[val_idx]
             # print(f"train_dataset {train_dataset}")
             # print(f"train_dataset[0] {train_dataset[0]}")
             # print(f"adj in train_dataset[0] {'adj' in train_dataset[0]}")
@@ -219,6 +237,16 @@ class Trainer(object):
             # 对于每一个seed的每一个数据划分，找到其在验证集精度上最高的从模型参数
             self.load_model(save_path)
             # 对于每一个seed的每一个数据划分，选取验证集上最好的精度，然后在测试集上进行测试
+            # seed|fold test_acc
+            best_test_acc = self.predict(test_loader)
+            print('seed/fold/{:02d}/{:03d}:  Train_Loss: {:.4f}  \tTrain_Acc {:.2f}  \tVal Acc: {:.2f}  '
+                  '\tTest Acc: {:.2f}'
+                  .format(self.seed,
+                          fold + 1,
+                          train_loss,
+                          train_acc,
+                          best_val_acc,
+                          best_test_acc))
 
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
@@ -237,7 +265,7 @@ class Trainer(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Neural Network Trainer Template')
-    parser.add_argument('-model', dest='model', default='ASAP', help='Model to use')
+    parser.add_argument('-model', dest='model', default='GCN', help='Model to use')
     parser.add_argument('-data', dest='dataset', default='PROTEINS', type=str, help='Dataset to use')
     parser.add_argument('-epoch', dest='max_epochs', default=100, type=int, help='Max epochs')
     parser.add_argument('-l2', dest='l2', default=5e-4, type=float, help='L2 regularization')
