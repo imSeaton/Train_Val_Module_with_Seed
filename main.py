@@ -8,8 +8,9 @@ from torch.nn import functional as F
 from sklearn.model_selection import KFold
 from torch_geometric.loader import DataLoader, DenseDataLoader as DenseLoader
 from torch_geometric.datasets import TUDataset
-from MyModel import MyModel
-
+# from MyModel import MyModel
+from Model import GCN
+from matplotlib import pyplot as plt
 
 def makeDirectory(dirpath):
     if not os.path.exists(dirpath):
@@ -209,21 +210,29 @@ class Trainer(object):
 
             # 每个epoch中的最佳验证和测试精度
             best_val_acc, best_test_acc = 0.0, 0.0
-
+            val_acc_lst = []
+            # early stopping 计数器
+            es = 0
             # 对于每折数据，训练max_epochs个epoch
             for epoch in range(1, self.p.max_epochs + 1):
                 train_acc, train_loss = self.run_epoch(train_loader)
                 val_acc = self.predict(val_loader)
-
+                val_acc_lst.append(val_acc)
                 # lr_decay 每50个epoch, 模型学习率衰减为原来1半
                 if epoch % self.p.lr_decay_step == 0:
                     for param_group in self.optimizer.param_groups:
                         param_group['lr'] = self.p.lr_decay_factor * param_group['lr']
-                # save model for best val score
+
+                # save model for best val score && early stopping
                 # 根据每个epoch的结果寻找最好的验证集上的精度，但是验证集精度下降的时候，并不会终止模型的训练
                 if val_acc > best_val_acc:
                     best_val_acc = val_acc
                     self.save_model(save_path)
+                    es = 0
+                else:
+                    es += 1
+                    if es > self.p.max_es:
+                        break
 
                 print('seed/fold/epoch {}/{:02d}/{:03d}:  Train_Loss: {:.4f}\tTrain_Acc {:.4f}\tVal Acc: {:.4f}'
                                                                                                 .format(self.seed,
@@ -232,6 +241,15 @@ class Trainer(object):
                                                                                                         train_loss,
                                                                                                         train_acc,
                                                                                                         best_val_acc))
+
+
+            # draw the picture
+            x_label = [i for i in range(len(val_acc_lst))]
+            plt.title("Val_acc")
+            plt.xlabel("epoch")
+            plt.ylabel("val_acc")
+            plt.plot(x_label, val_acc_lst)
+            plt.show()
 
             # load best model for testing
             # 对于每一个seed的每一个数据划分，找到其在验证集精度上最高的从模型参数
@@ -267,19 +285,20 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Neural Network Trainer Template')
     parser.add_argument('-model', dest='model', default='GCN', help='Model to use')
     parser.add_argument('-data', dest='dataset', default='PROTEINS', type=str, help='Dataset to use')
-    parser.add_argument('-epoch', dest='max_epochs', default=100, type=int, help='Max epochs')
+    parser.add_argument('-epoch', dest='max_epochs', default=200, type=int, help='Max epochs')
     parser.add_argument('-l2', dest='l2', default=5e-4, type=float, help='L2 regularization')
     parser.add_argument('-num_layers', dest='num_layers', default=3, type=int, help='Number of GCN Layers')
     parser.add_argument('-lr_decay_step', dest='lr_decay_step', default=50, type=int, help='lr decay step')
     parser.add_argument('-lr_decay_factor', dest='lr_decay_factor', default=0.5, type=float, help='lr decay factor')
 
     parser.add_argument('-batch', dest='batch_size', default=128, type=int, help='Batch size')
-    parser.add_argument('-hid_dim', dest='hid_dim', default=128, type=int, help='hidden dims')
+    parser.add_argument('-hid_dim', dest='hid_dim', default=256, type=int, help='hidden dims')
     parser.add_argument('-dropout_att', dest='dropout_att', default=0.1, type=float, help='dropout on attention scores')
-    parser.add_argument('-lr', dest='lr', default=0.01, type=float, help='Learning rate')
+    parser.add_argument('-lr', dest='lr', default=0.001, type=float, help='Learning rate')
     parser.add_argument('-ratio', dest='ratio', default=0.5, type=float, help='ratio')
 
     parser.add_argument('-folds', dest='folds', default=10, type=int, help='Cross validation folds')
+    parser.add_argument('-max_es', dest='max_es', default=10, type=int, help='Early Stopping')
 
     parser.add_argument('-name', dest='name', default='test_' + str(uuid.uuid4())[:8], help='Name of the run')
     parser.add_argument('-gpu', dest='gpu', default='1', help='GPU to use')
@@ -295,7 +314,7 @@ if __name__ == '__main__':
     print(args)
     # get 20 run average
     # seeds = [8971, 85688, 9467, 32830, 28689, 94845, 69840, 50883, 74177, 79585, 1055, 75631, 6825, 93188, 95426, 54514, 31467, 70597, 71149, 81994]
-    seeds = [8971, 85688, 9467, 32830, 28689, 94845, 69840, 50883, 74177, 79585]
+    seeds = [37315482]
     counter = 0
     args.log_db = args.name
     print("log_db:", args.log_db)
